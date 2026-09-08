@@ -145,7 +145,6 @@ class AceC2PASigner:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "filename_prefix": ("STRING", {"default": "ACE_C2PA"}),
                 "manifest_json": (
                     "STRING",
                     {
@@ -195,8 +194,8 @@ class AceC2PASigner:
                 "filename": (
                     "STRING",
                     {
-                        "default": "",
-                        "tooltip": "Base filename, e.g. abcdef or abcdef.png. Node appends _001, _002... Extension always follows the source. Empty = filename_prefix + timestamp.",
+                        "default": "ACE_C2PA",
+                        "tooltip": "Base filename, e.g. abcdef or abcdef.png. Node appends _001, _002... Extension always follows the source.",
                     },
                 ),
             },
@@ -215,8 +214,8 @@ class AceC2PASigner:
 
     def sign(
         self,
-        filename_prefix: str = "ACE_C2PA",
         manifest_json: str = "{}",
+        filename_prefix: str = "ACE_C2PA",  # legacy, accepted but not shown
         image: Optional[torch.Tensor] = None,
         source_path: str = "",
         parent_path: str = "",
@@ -224,7 +223,7 @@ class AceC2PASigner:
         cert_path: str = DEFAULT_CERT,
         ta_url: str = "",
         output_dir: str = "",
-        filename: str = "",
+        filename: str = "ACE_C2PA",
         **kwargs,
     ) -> Tuple[str, str, torch.Tensor]:
         tool = _c2patool_bin()
