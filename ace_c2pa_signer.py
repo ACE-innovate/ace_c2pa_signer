@@ -10,6 +10,7 @@ End-to-end tests:
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -187,6 +188,17 @@ class AceC2PASigner:
                     "STRING",
                     {"default": "", "tooltip": "Optional Time Authority URL, e.g. http://timestamp.digicert.com"},
                 ),
+                "output_dir": (
+                    "STRING",
+                    {"default": "", "tooltip": "Directory for the signed file. Empty = ComfyUI output folder."},
+                ),
+                "filename": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "tooltip": "Base filename, e.g. abcdef or abcdef.png. Node appends _001, _002... Extension always follows the source. Empty = filename_prefix + timestamp.",
+                    },
+                ),
             },
         }
 
@@ -211,6 +223,8 @@ class AceC2PASigner:
         private_key_path: str = DEFAULT_KEY,
         cert_path: str = DEFAULT_CERT,
         ta_url: str = "",
+        output_dir: str = "",
+        filename: str = "",
         **kwargs,
     ) -> Tuple[str, str, torch.Tensor]:
         tool = _c2patool_bin()
@@ -280,8 +294,25 @@ class AceC2PASigner:
                 json.dump(manifest, f)
 
             # --- output file (extension must match source) ---
-            out_name = f"{filename_prefix}_{time.strftime('%Y%m%d_%H%M%S')}_{int(time.time()*1000)%1000:03d}{src_ext}"
-            out_path = os.path.join(_output_dir(), out_name)
+            out_dir = output_dir.strip() or _output_dir()
+            os.makedirs(out_dir, exist_ok=True)
+            base = filename.strip()
+            if base:
+                stem, given_ext = os.path.splitext(os.path.basename(base))
+                if given_ext and given_ext.lower() != src_ext:
+                    log.append(
+                        f"Note: extension {given_ext} replaced with {src_ext} (must match source)."
+                    )
+                n = 1
+                pat = re.compile(re.escape(stem) + r"_(\d{3,})" + re.escape(src_ext) + r"$")
+                for f_ in os.listdir(out_dir):
+                    m_ = pat.match(f_)
+                    if m_:
+                        n = max(n, int(m_.group(1)) + 1)
+                out_name = f"{stem}_{n:03d}{src_ext}"
+            else:
+                out_name = f"{filename_prefix}_{time.strftime('%Y%m%d_%H%M%S')}_{int(time.time()*1000)%1000:03d}{src_ext}"
+            out_path = os.path.join(out_dir, out_name)
 
             # --- sign ---
             cmd = [tool, src, "-m", manifest_file, "-o", out_path, "-f"]
