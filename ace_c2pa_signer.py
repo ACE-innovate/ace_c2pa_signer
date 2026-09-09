@@ -187,9 +187,9 @@ class AceC2PASigner:
                     "STRING",
                     {"default": "", "tooltip": "Optional Time Authority URL, e.g. http://timestamp.digicert.com"},
                 ),
-                "output_dir": (
+                "folder": (
                     "STRING",
-                    {"default": "", "tooltip": "Directory for the signed file. Empty = ComfyUI output folder."},
+                    {"default": "", "tooltip": "Subfolder under the ComfyUI output folder. Blank = output folder itself. Created if missing."},
                 ),
                 "filename": (
                     "STRING",
@@ -222,8 +222,9 @@ class AceC2PASigner:
         private_key_path: str = DEFAULT_KEY,
         cert_path: str = DEFAULT_CERT,
         ta_url: str = "",
-        output_dir: str = "",
+        folder: str = "",
         filename: str = "ACE_C2PA",
+        output_dir: str = "",  # legacy, accepted but not shown
         **kwargs,
     ) -> Tuple[str, str, torch.Tensor]:
         tool = _c2patool_bin()
@@ -293,7 +294,12 @@ class AceC2PASigner:
                 json.dump(manifest, f)
 
             # --- output file (extension must match source) ---
-            out_dir = output_dir.strip() or _output_dir()
+            if output_dir.strip():  # legacy absolute dir
+                out_dir = output_dir.strip()
+            elif folder.strip():
+                out_dir = os.path.join(_output_dir(), folder.strip())
+            else:
+                out_dir = _output_dir()
             os.makedirs(out_dir, exist_ok=True)
             base = filename.strip()
             if base:
