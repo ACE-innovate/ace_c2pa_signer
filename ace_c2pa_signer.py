@@ -187,6 +187,20 @@ class AceC2PASigner:
                     "STRING",
                     {"default": "", "tooltip": "Optional Time Authority URL, e.g. http://timestamp.digicert.com"},
                 ),
+                "strip_metadata": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Re-encode source_path files without EXIF/PNG text chunks (removes ComfyUI prompt/workflow). Destroys any manifest inside the source itself - use parent_path for the chain. Tensor input is always clean.",
+                    },
+                ),
+                "embed_thumbnails": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Off = c2patool settings builder.thumbnail.enabled=false: no auto thumbnails embedded (claim or parent ingredient). Viewers then show no preview images.",
+                    },
+                ),
                 "folder": (
                     "STRING",
                     {"default": "", "tooltip": "Subfolder under the ComfyUI output folder. Blank = output folder itself. Created if missing."},
@@ -222,6 +236,8 @@ class AceC2PASigner:
         private_key_path: str = DEFAULT_KEY,
         cert_path: str = DEFAULT_CERT,
         ta_url: str = "",
+        strip_metadata: bool = True,
+        embed_thumbnails: bool = True,
         folder: str = "",
         filename: str = "ACE_C2PA",
         output_dir: str = "",  # legacy, accepted but not shown
@@ -239,7 +255,19 @@ class AceC2PASigner:
             if src:
                 if not os.path.isfile(src):
                     raise RuntimeError(f"source_path not found: {src}")
-                log.append(f"Signing file directly: {src}")
+                if strip_metadata:
+                    ext = os.path.splitext(src)[1].lower() or ".png"
+                    clean = os.path.join(tmpdir, f"clean{ext}")
+                    im = Image.open(src)
+                    fmt = im.format or "PNG"
+                    im = im.convert("RGB") if fmt in ("JPEG",) else im
+                    im.save(clean, fmt)  # no exif/pnginfo passed -> metadata dropped
+                    log.append(
+                        f"Stripped metadata from source (prompts/EXIF removed; any manifest inside the source is gone - parent_path carries the chain): {src}"
+                    )
+                    src = clean
+                else:
+                    log.append(f"Signing file directly (metadata kept): {src}")
             else:
                 if image is None:
                     raise RuntimeError(
@@ -321,6 +349,14 @@ class AceC2PASigner:
 
             # --- sign ---
             cmd = [tool, src, "-m", manifest_file, "-o", out_path, "-f"]
+            if not embed_thumbnails:
+                settings_file = os.path.join(tmpdir, "settings.json")
+                with open(settings_file, "w") as f:
+                    json.dump(
+                        {"version": 1, "builder": {"thumbnail": {"enabled": False}}}, f
+                    )
+                cmd += ["--settings", settings_file]
+                log.append("Thumbnails disabled (builder.thumbnail.enabled=false).")
             if parent:
                 if not os.path.isfile(parent):
                     raise RuntimeError(f"parent_path not found: {parent}")
