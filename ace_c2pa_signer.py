@@ -212,6 +212,23 @@ class AceC2PASigner:
                         "tooltip": "Base filename, e.g. abcdef or abcdef.png. Node appends _001, _002... Extension always follows the source.",
                     },
                 ),
+                # --- outputs: extra identically-signed formats (same folder, same numbering) ---
+                "out_png": (
+                    "BOOLEAN",
+                    {"default": False, "tooltip": "Also produce an identically signed .png copy in the same location."},
+                ),
+                "out_jpg": (
+                    "BOOLEAN",
+                    {"default": False, "tooltip": "Also produce an identically signed .jpg copy in the same location."},
+                ),
+                "out_webp": (
+                    "BOOLEAN",
+                    {"default": False, "tooltip": "Also produce an identically signed .webp copy in the same location."},
+                ),
+                "out_avif": (
+                    "BOOLEAN",
+                    {"default": False, "tooltip": "Also produce an identically signed .avif copy in the same location (requires Pillow AVIF support)."},
+                ),
             },
         }
 
@@ -241,6 +258,10 @@ class AceC2PASigner:
         folder: str = "",
         filename: str = "ACE_C2PA",
         output_dir: str = "",  # legacy, accepted but not shown
+        out_png: bool = False,
+        out_jpg: bool = False,
+        out_webp: bool = False,
+        out_avif: bool = False,
         **kwargs,
     ) -> Tuple[str, str, torch.Tensor]:
         tool = _c2patool_bin()
@@ -321,7 +342,7 @@ class AceC2PASigner:
             with open(manifest_file, "w") as f:
                 json.dump(manifest, f)
 
-            # --- output file (extension must match source) ---
+            # --- output location ---
             if output_dir.strip():  # legacy absolute dir
                 out_dir = output_dir.strip()
             elif folder.strip():
@@ -330,55 +351,96 @@ class AceC2PASigner:
                 out_dir = _output_dir()
             os.makedirs(out_dir, exist_ok=True)
             base = filename.strip()
-            if base:
-                stem, given_ext = os.path.splitext(os.path.basename(base))
-                if given_ext and given_ext.lower() != src_ext:
-                    log.append(
-                        f"Note: extension {given_ext} replaced with {src_ext} (must match source)."
-                    )
-                n = 1
-                pat = re.compile(re.escape(stem) + r"_(\d{3,})" + re.escape(src_ext) + r"$")
-                for f_ in os.listdir(out_dir):
-                    m_ = pat.match(f_)
-                    if m_:
-                        n = max(n, int(m_.group(1)) + 1)
-                out_name = f"{stem}_{n:03d}{src_ext}"
-            else:
-                out_name = f"{filename_prefix}_{time.strftime('%Y%m%d_%H%M%S')}_{int(time.time()*1000)%1000:03d}{src_ext}"
-            out_path = os.path.join(out_dir, out_name)
 
-            # --- sign ---
-            cmd = [tool, src, "-m", manifest_file, "-o", out_path, "-f"]
+            def next_out_path(ext: str) -> str:
+                """Auto-incremented output path in out_dir for the given extension."""
+                if base:
+                    stem, _ = os.path.splitext(os.path.basename(base))
+                    n = 1
+                    pat = re.compile(re.escape(stem) + r"_(\d{3,})" + re.escape(ext) + r"$")
+                    for f_ in os.listdir(out_dir):
+                        m_ = pat.match(f_)
+                        if m_:
+                            n = max(n, int(m_.group(1)) + 1)
+                    name = f"{stem}_{n:03d}{ext}"
+                else:
+                    name = (
+                        f"{filename_prefix}_{time.strftime('%Y%m%d_%H%M%S')}_"
+                        f"{int(time.time()*1000)%1000:03d}{ext}"
+                    )
+                return os.path.join(out_dir, name)
+
+            # shared c2patool arguments
+            extra_args: List[str] = []
             if not embed_thumbnails:
                 settings_file = os.path.join(tmpdir, "settings.json")
                 with open(settings_file, "w") as f:
                     json.dump(
                         {"version": 1, "builder": {"thumbnail": {"enabled": False}}}, f
                     )
-                cmd += ["--settings", settings_file]
+                extra_args += ["--settings", settings_file]
                 log.append("Thumbnails disabled (builder.thumbnail.enabled=false).")
             if parent:
                 if not os.path.isfile(parent):
                     raise RuntimeError(f"parent_path not found: {parent}")
-                cmd += ["-p", parent]
+                extra_args += ["-p", parent]
                 log.append(f"Parent ingredient: {parent}")
 
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    f"c2patool signing failed (exit {proc.returncode}).\n"
-                    f"cmd: {' '.join(cmd)}\nstderr: {proc.stderr.strip()}\nstdout: {proc.stdout.strip()}"
-                )
-            if proc.stderr.strip():
-                log.append(f"c2patool: {proc.stderr.strip()}")
-            log.append(f"Signed -> {out_path}")
+            def sign_one(src_file: str, dst_path: str) -> None:
+                cmd = [tool, src_file, "-m", manifest_file, "-o", dst_path, "-f"] + extra_args
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        f"c2patool signing failed (exit {proc.returncode}).\n"
+                        f"cmd: {' '.join(cmd)}\nstderr: {proc.stderr.strip()}\nstdout: {proc.stdout.strip()}"
+                    )
+                if proc.stderr.strip():
+                    log.append(f"c2patool: {proc.stderr.strip()}")
+                log.append(f"Signed -> {dst_path}")
 
-            # --- report on the signed file ---
+            base_ext_given = os.path.splitext(os.path.basename(base))[1].lower() if base else ""
+            if base_ext_given and base_ext_given != src_ext:
+                log.append(
+                    f"Note: extension {base_ext_given} replaced with {src_ext} (primary must match source)."
+                )
+
+            # --- primary: source's own format (default behavior, unchanged) ---
+            out_path = next_out_path(src_ext)
+            sign_one(src, out_path)
+            signed_paths = [out_path]
+
+            # --- outputs: extra identically signed formats from the same source ---
+            fmt_map = {
+                ".png": ("PNG", out_png),
+                ".jpg": ("JPEG", out_jpg),
+                ".webp": ("WEBP", out_webp),
+                ".avif": ("AVIF", out_avif),
+            }
+            primary_family = ".jpg" if src_ext in (".jpg", ".jpeg") else src_ext
+            src_pil = None
+            for ext, (pil_fmt, enabled) in fmt_map.items():
+                if not enabled or ext == primary_family:
+                    continue
+                try:
+                    if src_pil is None:
+                        src_pil = Image.open(src)
+                    conv = os.path.join(tmpdir, f"conv{ext}")
+                    im = src_pil.convert("RGB") if pil_fmt == "JPEG" else src_pil
+                    im.save(conv, pil_fmt)
+                    dst = next_out_path(ext)
+                    sign_one(conv, dst)
+                    signed_paths.append(dst)
+                except Exception as e:
+                    log.append(f"{ext} output failed: {e}"
+                               + (" (Pillow AVIF support missing: pip install pillow-avif-plugin)"
+                                  if ext == ".avif" and "avif" in str(e).lower() else ""))
+
+            # --- report on the primary signed file ---
             has, data, raw = _read_report(tool, out_path)
             report = raw if raw else "(no report)"
 
             preview = _pil_to_tensor(Image.open(out_path))
-            return (out_path, "\n".join(log) + "\n\n" + report, preview)
+            return ("\n".join(signed_paths), "\n".join(log) + "\n\n" + report, preview)
 
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
